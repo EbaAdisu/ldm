@@ -1,5 +1,5 @@
 .ldm-btn {
-  position: absolute;
+  position: fixed;
   z-index: 2147483647;
   top: 8px;
   right: 8px;

@@ -30,17 +30,38 @@
 
   function injectVideoButton(video) {
     if (injectedVideos.has(video)) return
-    if (video.offsetWidth < 100) return  // skip hidden/tiny players
+    if (video.offsetWidth < 100) return
     injectedVideos.add(video)
-
-    const wrap = video.parentElement
-    if (!wrap) return
-    if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative'
 
     const btn = document.createElement('button')
     btn.className = 'ldm-btn'
     btn.innerHTML = '<span>⬇</span> LDM'
     btn.title = 'Download with LDM'
+
+    // Attach to body — completely outside the video player's DOM tree.
+    // This means YouTube/Vimeo/etc. overflow:hidden, pointer-event overlays,
+    // and z-index stacking contexts cannot block or clip the button.
+    document.body.appendChild(btn)
+
+    function reposition() {
+      const r = video.getBoundingClientRect()
+      // Hide when video is off-screen or invisible
+      if (r.width < 10 || r.height < 10 || r.bottom < 0 || r.top > window.innerHeight) {
+        btn.style.opacity = '0'
+        btn.style.pointerEvents = 'none'
+        return
+      }
+      btn.style.opacity = '1'
+      btn.style.pointerEvents = ''
+      // position: fixed uses viewport coords — getBoundingClientRect gives exactly that
+      btn.style.top   = `${r.top + 8}px`
+      btn.style.right = `${window.innerWidth - r.right + 8}px`
+    }
+
+    reposition()
+    window.addEventListener('scroll', reposition, { passive: true })
+    window.addEventListener('resize', reposition, { passive: true })
+    new ResizeObserver(reposition).observe(video)
 
     btn.addEventListener('click', (e) => {
       e.preventDefault()
@@ -49,23 +70,6 @@
       const src = getVideoSrc(video) || window.location.href
       sendDownload(src, btn)
     })
-
-    wrap.appendChild(btn)
-
-    const ro = new ResizeObserver(() => {
-      const vr = video.getBoundingClientRect()
-      const pr = wrap.getBoundingClientRect()
-      btn.style.top   = `${vr.top - pr.top + 8}px`
-      btn.style.right = `${pr.right - vr.right + 8}px`
-    })
-    ro.observe(video)
-    ro.disconnect()  // trigger once, then re-observe
-    new ResizeObserver(() => {
-      const vr = video.getBoundingClientRect()
-      const pr = wrap.getBoundingClientRect()
-      btn.style.top   = `${vr.top - pr.top + 8}px`
-      btn.style.right = `${pr.right - vr.right + 8}px`
-    }).observe(video)
   }
 
   function scanVideos() {
@@ -188,9 +192,10 @@
 
   // ── Observation & initial scans ───────────────────────────────────────────────
 
+  let scanTimer = null
   const observer = new MutationObserver(() => {
-    scanVideos()
-    scanLinks()
+    clearTimeout(scanTimer)
+    scanTimer = setTimeout(() => { scanVideos(); scanLinks() }, 300)
   })
   observer.observe(document.documentElement, { childList: true, subtree: true })
 
