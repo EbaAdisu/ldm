@@ -191,25 +191,95 @@ function setStatus(id, status, extra = {}) {
   events.emit('progress', { id, status, ...extra })
 }
 
+// ── Filename builder (Option B — page URL slug) ───────────────────────────────
+
+function buildFilename(pageUrl, quality, urlForExt = '') {
+  // Detect file extension from the actual download URL
+  const ext = (() => {
+    try {
+      const p = new URL(urlForExt).pathname.split('.').pop().toLowerCase()
+      return ['mp4','mkv','webm','flv','avi','mov','mp3','aac','ogg','m4v'].includes(p) ? p : 'mp4'
+    } catch { return 'mp4' }
+  })()
+
+  if (!pageUrl) return quality ? `download [${quality}].${ext}` : null
+
+  try {
+    const pathname = new URL(pageUrl).pathname.replace(/\/$/, '').replace(/#.*$/, '')
+    const slug     = pathname.split('/').filter(Boolean).pop()
+    if (!slug) return null
+
+    let parts    = slug.split('-').filter(Boolean)
+    let episode  = null
+    let season   = null
+    let subType  = null
+
+    // "episode-N"
+    const epIdx = parts.findIndex(p => p === 'episode')
+    if (epIdx !== -1 && /^\d+$/.test(parts[epIdx + 1] ?? '')) {
+      episode = `Episode ${parts[epIdx + 1]}`
+      parts.splice(epIdx, 2)
+    }
+
+    // "season-N"
+    const snIdx = parts.findIndex(p => p === 'season')
+    if (snIdx !== -1 && /^\d+$/.test(parts[snIdx + 1] ?? '')) {
+      season = `Season ${parts[snIdx + 1]}`
+      parts.splice(snIdx, 2)
+    }
+
+    // "english-subbed" / "subbed" / "dubbed" etc.
+    const subIdx = parts.findIndex(p => p === 'subbed' || p === 'dubbed')
+    if (subIdx !== -1) {
+      const langs   = ['english', 'japanese', 'french', 'spanish', 'german', 'portuguese']
+      const prevWord = parts[subIdx - 1] ?? ''
+      const hasLang  = langs.includes(prevWord)
+      const type     = parts[subIdx] === 'subbed' ? 'Subbed' : 'Dubbed'
+      subType = hasLang
+        ? `(${prevWord.charAt(0).toUpperCase() + prevWord.slice(1)} ${type})`
+        : `(${type})`
+      parts.splice(hasLang ? subIdx - 1 : subIdx, hasLang ? 2 : 1)
+    }
+
+    const title = parts
+      .filter(p => p.length > 0)
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(' ')
+
+    if (!title) return null
+
+    const nameParts = [title]
+    if (season)  nameParts.push(`- ${season}`)
+    if (episode) nameParts.push(`- ${episode}`)
+    if (subType) nameParts.push(subType)
+    if (quality) nameParts.push(`[${quality}]`)
+
+    return `${nameParts.join(' ')}.${ext}`
+  } catch { return null }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function addDownload(url, options = {}) {
-  const id      = uuid()
-  const engine  = options.forceEngine ?? await detectEngine(url)
-  const referer = options.referer || null
-  const cookies = options.cookies || null
+  const id       = uuid()
+  const engine   = options.forceEngine ?? await detectEngine(url)
+  const referer  = options.referer  || null
+  const cookies  = options.cookies  || null
+  const pageUrl  = options.pageUrl  || null
+  const quality  = options.quality  || null
+  const filename = buildFilename(pageUrl, quality, url)
 
   db.prepare(`
-    INSERT INTO downloads (id, url, engine, status)
-    VALUES (?, ?, ?, 'pending')
-  `).run(id, url, engine)
+    INSERT INTO downloads (id, url, engine, status${filename ? ', filename' : ''})
+    VALUES (?, ?, ?, 'pending'${filename ? ', ?' : ''})
+  `).run(id, url, engine, ...(filename ? [filename] : []))
 
-  events.emit('added', { id, url, engine })
+  events.emit('added', { id, url, engine, filename })
 
   if (engine === 'ytdlp') {
     downloadWithYtdlp(id, url, referer, cookies)
   } else if (aria2Available) {
-    await downloadWithAria2(id, url, referer, cookies)
+    await downloadWithAria2(id, url, referer, cookies, filename)
   } else {
     downloadWithHttp(id, url, referer, cookies)
   }
@@ -261,7 +331,7 @@ export function cleanup() {
 
 // ── aria2 engine ──────────────────────────────────────────────────────────────
 
-async function downloadWithAria2(id, url, referer = null, cookies = null) {
+async function downloadWithAria2(id, url, referer = null, cookies = null, filename = null) {
   try {
     const s       = getSettings()
     const tempDir = getTempDir(id)
@@ -280,7 +350,8 @@ async function downloadWithAria2(id, url, referer = null, cookies = null) {
       'min-split-size':            '1M',
       header:                      headers,
     }
-    if (referer) opts.referer = referer
+    if (referer)  opts.referer = referer
+    if (filename) opts.out     = filename   // aria2 will save with this exact name
 
     const gid = await aria2Rpc('addUri', [[url], opts])
     db.prepare(`UPDATE downloads SET aria2_gid=?, status='downloading' WHERE id=?`).run(gid, id)

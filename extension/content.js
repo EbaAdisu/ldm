@@ -1,15 +1,10 @@
 ;(function () {
   'use strict'
 
-  const injectedVideos = new WeakSet()
-  const injectedLinks  = new WeakSet()
-  const seenUrls       = new Set()
-
-  // Fix 1: store the latest intercepted stream URL per video element.
-  // This is updated any time background detects a real media URL, even if the
-  // button was already injected. Click reads from this map at the moment of click
-  // so it always uses the most up-to-date URL instead of the PHP embed page URL.
-  const videoStreamUrls = new WeakMap()
+  const injectedVideos  = new WeakSet()
+  const injectedLinks   = new WeakSet()
+  const seenUrls        = new Set()
+  const videoStreamUrls = new WeakMap()  // video → latest intercepted stream URL
 
   const FILE_EXTS = new Set([
     'mp4','webm','mkv','avi','mov','flv','m4v','wmv','ts',
@@ -20,44 +15,277 @@
     'm3u8','mpd',
   ])
 
-  // ── Layer 3: <video> element injection ───────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
   function getVideoSrc(video) {
     const src = video.src || video.currentSrc ||
       video.querySelector('source')?.src ||
       video.getAttribute('data-src') ||
       video.getAttribute('data-url') || null
-    // blob: URLs are not downloadable directly — ignore them
     return src && !src.startsWith('blob:') ? src : null
   }
 
-  function injectVideoButton(video, streamUrl = null) {
-    // Always update the stored stream URL if a better one arrives later
-    if (streamUrl) {
-      videoStreamUrls.set(video, streamUrl)
-      console.log('[LDM] stream URL updated for video:', streamUrl)
+  function escHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  }
+
+  function formatSize(bytes) {
+    if (!bytes || bytes <= 0) return '—'
+    const u = ['B', 'KB', 'MB', 'GB']
+    let i = 0, n = bytes
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
+    return `${n.toFixed(1)} ${u[i]}`
+  }
+
+  // Guess quality label from a URL string
+  function guessQuality(url) {
+    if (!url) return null
+    if (url.includes('fullhd=1')) return '1080p'
+    if (url.includes('fullhd=0')) return 'SD'
+    const m = url.match(/[_\-x](\d{3,4}p)/i)
+    if (m) return m[1].toLowerCase()
+    try {
+      const params = new URL(url).searchParams
+      const q = params.get('quality') || params.get('res') || params.get('resolution')
+      if (q) return q.includes('p') ? q : `${q}p`
+    } catch {}
+    return null
+  }
+
+  // Build display title from the parent page URL slug (Option B)
+  function titleFromPageUrl(pageUrl) {
+    try {
+      const pathname = new URL(pageUrl).pathname.replace(/\/$/, '').replace(/#.*$/, '')
+      const slug = pathname.split('/').filter(Boolean).pop()
+      if (!slug) return null
+
+      let parts   = slug.split('-').filter(Boolean)
+      let episode = null
+      let subType = null
+
+      const epIdx = parts.findIndex(p => p === 'episode')
+      if (epIdx !== -1 && /^\d+$/.test(parts[epIdx + 1] ?? '')) {
+        episode = `Ep ${parts[epIdx + 1]}`
+        parts.splice(epIdx, 2)
+      }
+
+      // Remove season number from display (it stays in the title words)
+      const snIdx = parts.findIndex(p => p === 'season')
+      if (snIdx !== -1 && /^\d+$/.test(parts[snIdx + 1] ?? '')) {
+        parts[snIdx]     = `Season`
+        parts[snIdx + 1] = parts[snIdx + 1]
+      }
+
+      const LANGS = ['english','japanese','french','spanish','german','portuguese']
+      const subIdx = parts.findIndex(p => p === 'subbed' || p === 'dubbed')
+      if (subIdx !== -1) {
+        const prev    = parts[subIdx - 1] ?? ''
+        const hasLang = LANGS.includes(prev)
+        const type    = parts[subIdx] === 'subbed' ? 'Subbed' : 'Dubbed'
+        subType = hasLang
+          ? `(${prev.charAt(0).toUpperCase() + prev.slice(1)} ${type})`
+          : `(${type})`
+        parts.splice(hasLang ? subIdx - 1 : subIdx, hasLang ? 2 : 1)
+      }
+
+      const title = parts
+        .filter(p => p.length > 0)
+        .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+        .join(' ')
+
+      return [title, episode, subType].filter(Boolean).join(' ') || null
+    } catch { return null }
+  }
+
+  // ── Quality detection ─────────────────────────────────────────────────────────
+
+  function detectQualities(video) {
+    const sources = []
+
+    // Strategy A — VideoJS player API (wco.tv and most anime sites)
+    try {
+      const players = window.videojs?.players ?? {}
+      for (const player of Object.values(players)) {
+        const srcs = player.currentSources?.() ?? []
+        for (const s of srcs) {
+          if (s.src && !s.src.startsWith('blob:')) {
+            sources.push({
+              url:   s.src,
+              label: s.label || s.res || guessQuality(s.src) || 'Default',
+              type:  s.type || '',
+            })
+          }
+        }
+        // VideoJS quality levels plugin
+        const ql = player.qualityLevels?.()
+        if (ql?.length) {
+          for (let i = 0; i < ql.length; i++) {
+            const lv = ql[i]
+            const src = lv.src || lv.uri
+            if (src && !src.startsWith('blob:') && !sources.find(x => x.url === src)) {
+              sources.push({
+                url:   src,
+                label: lv.height ? `${lv.height}p` : guessQuality(src) || `Q${i + 1}`,
+              })
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Strategy B — <source> elements
+    if (sources.length === 0) {
+      video.querySelectorAll('source').forEach(s => {
+        const src = s.src || s.getAttribute('src')
+        if (src && !src.startsWith('blob:')) {
+          sources.push({
+            url:   src,
+            label: s.getAttribute('label') || s.getAttribute('res') || guessQuality(src) || 'Default',
+            type:  s.type || '',
+          })
+        }
+      })
     }
 
-    if (injectedVideos.has(video)) return   // button already in DOM, URL updated above
+    // Strategy C — network-intercepted URL stored in videoStreamUrls
+    const streamUrl = videoStreamUrls.get(video)
+    if (streamUrl && !sources.find(x => x.url === streamUrl)) {
+      sources.unshift({
+        url:   streamUrl,
+        label: guessQuality(streamUrl) || '1080p',
+      })
+    }
+
+    // Strategy D — video element src fallback
+    if (sources.length === 0) {
+      const src = getVideoSrc(video)
+      if (src) sources.push({ url: src, label: guessQuality(src) || 'Default' })
+    }
+
+    // Deduplicate by URL
+    const seen = new Set()
+    return sources.filter(s => { if (seen.has(s.url)) return false; seen.add(s.url); return true })
+  }
+
+  // ── Dropdown ──────────────────────────────────────────────────────────────────
+
+  function openDropdown(btn, video) {
+    // Close any existing dropdown
+    document.getElementById('ldm-dropdown')?.remove()
+
+    const sources = detectQualities(video)
+    const pageUrl = document.referrer || (window.self !== window.top ? null : window.location.href)
+    const title   = (pageUrl && titleFromPageUrl(pageUrl)) || 'Video'
+
+    if (sources.length === 0) {
+      // Nothing detected — download page URL via yt-dlp
+      const fallback = videoStreamUrls.get(video) || window.location.href
+      triggerDownload(fallback, btn, null, null, pageUrl)
+      return
+    }
+
+    if (sources.length === 1) {
+      // Single quality — download directly, no dropdown needed
+      const src = sources[0].url
+      triggerDownload(src, btn, sources[0].label, pageUrl)
+      return
+    }
+
+    const drop = document.createElement('div')
+    drop.id = 'ldm-dropdown'
+    drop.innerHTML = `
+      <div class="ldm-drop-title" title="${escHtml(pageUrl || '')}">${escHtml(title)}</div>
+      ${sources.map((s, i) => `
+        <div class="ldm-drop-item" data-idx="${i}">
+          <span class="ldm-drop-dot">${i === 0 ? '●' : '○'}</span>
+          <span class="ldm-drop-label">${escHtml(s.label)}</span>
+          <span class="ldm-drop-size" data-size-idx="${i}">…</span>
+        </div>
+      `).join('')}
+    `
+    document.body.appendChild(drop)
+
+    // Position relative to button
+    positionDropdown(drop, btn)
+
+    // Click handlers — each row downloads that quality
+    drop.querySelectorAll('.ldm-drop-item').forEach((row, i) => {
+      row.addEventListener('click', (e) => {
+        e.stopPropagation()
+        drop.remove()
+        triggerDownload(sources[i].url, btn, sources[i].label, pageUrl)
+      })
+    })
+
+    // Close on outside click or Escape
+    const close = (e) => {
+      if (!drop.contains(e.target) && e.target !== btn) { drop.remove() }
+    }
+    const closeKey = (e) => { if (e.key === 'Escape') drop.remove() }
+    setTimeout(() => {
+      document.addEventListener('click',   close)
+      document.addEventListener('keydown', closeKey)
+    }, 10)
+    drop.addEventListener('remove', () => {
+      document.removeEventListener('click',   close)
+      document.removeEventListener('keydown', closeKey)
+    })
+
+    // Fetch file sizes from background (HEAD requests per quality URL)
+    chrome.runtime.sendMessage({
+      type:    'get_quality_sizes',
+      sources: sources.map(s => ({ url: s.url, label: s.label })),
+      referer: location.href,
+    }, (res) => {
+      if (!res?.sources || !document.getElementById('ldm-dropdown')) return
+      res.sources.forEach((s, i) => {
+        const el = drop.querySelector(`[data-size-idx="${i}"]`)
+        if (el) el.textContent = s.sizeStr || '—'
+      })
+    })
+  }
+
+  function positionDropdown(drop, btn) {
+    const br = btn.getBoundingClientRect()
+    drop.style.right = `${window.innerWidth - br.right}px`
+    drop.style.top   = `${br.bottom + 6}px`
+    // Flip above if it would go off-screen bottom
+    requestAnimationFrame(() => {
+      const dr = drop.getBoundingClientRect()
+      if (dr.bottom > window.innerHeight - 8) {
+        drop.style.top = `${br.top - dr.height - 6}px`
+      }
+    })
+  }
+
+  // ── Core: inject button on video ──────────────────────────────────────────────
+
+  function injectVideoButton(video, streamUrl = null) {
+    if (streamUrl) {
+      videoStreamUrls.set(video, streamUrl)
+      console.log('[LDM] stream URL updated:', streamUrl)
+    }
+
+    if (injectedVideos.has(video)) return
     if (video.offsetWidth < 100) return
     injectedVideos.add(video)
 
     const btn = document.createElement('button')
-    btn.className = 'ldm-btn'
-    btn.innerHTML = '<span>⬇</span> LDM'
-    btn.title = 'Download with LDM'
+    btn.className   = 'ldm-btn'
+    btn.innerHTML   = '<span class="ldm-btn-icon">⬇</span> LDM <span class="ldm-btn-arrow">▾</span>'
+    btn.title       = 'Download with LDM'
+    btn.dataset.ldmId = Math.random().toString(36).slice(2)  // fingerprint like IDM
     document.body.appendChild(btn)
 
     function reposition() {
       const r = video.getBoundingClientRect()
       if (r.width < 10 || r.height < 10 || r.bottom < 0 || r.top > window.innerHeight) {
-        btn.style.opacity = '0'
-        btn.style.pointerEvents = 'none'
-        return
+        btn.style.opacity = '0'; btn.style.pointerEvents = 'none'; return
       }
-      btn.style.opacity = '1'
-      btn.style.pointerEvents = ''
-      btn.style.top   = `${r.top + 8}px`
+      btn.style.opacity = '1'; btn.style.pointerEvents = ''
+      btn.style.top   = `${r.top   + 8}px`
       btn.style.right = `${window.innerWidth - r.right + 8}px`
     }
 
@@ -67,27 +295,16 @@
     new ResizeObserver(reposition).observe(video)
 
     btn.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      const streamUrl = videoStreamUrls.get(video)
-      const elemSrc   = getVideoSrc(video)
-      const src       = streamUrl || elemSrc || window.location.href
-      // If URL came from an intercepted media stream or video element src it's
-      // a direct file — tell the backend to use aria2 instead of running detectEngine
-      // (detectEngine can't determine engine from URLs like /getvid?evid=...)
-      const engine  = (streamUrl || elemSrc) ? 'aria2' : undefined
-      const referer = location.href
-      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto')
-      // Ask background to collect cookies (content scripts can't call chrome.cookies)
-      chrome.runtime.sendMessage({ type: 'get_cookies', url: src }, res => {
-        const cookies = res?.cookies || ''
-        console.log('[LDM] cookies collected:', cookies ? 'yes' : 'none')
-        sendDownload(src, btn, false, engine, referer, cookies)
-      })
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation()
+      // If dropdown already open, close it
+      if (document.getElementById('ldm-dropdown')) {
+        document.getElementById('ldm-dropdown').remove()
+        return
+      }
+      openDropdown(btn, video)
     })
 
-    console.log('[LDM] button injected on video in', location.href)
+    console.log('[LDM] button injected in', location.href)
   }
 
   function scanVideos() {
@@ -96,7 +313,57 @@
     videos.forEach(v => injectVideoButton(v))
   }
 
-  // ── Layer 2: <a href> download link injection ─────────────────────────────────
+  // ── Send download ─────────────────────────────────────────────────────────────
+
+  function triggerDownload(url, btn, quality = null, pageUrl = null) {
+    const original    = btn.innerHTML
+    btn.innerHTML     = '<span class="ldm-btn-icon">⏳</span> Adding…'
+
+    const engine  = 'aria2'
+    const referer = location.href
+
+    function onSuccess(id) {
+      console.log('[LDM] added, id:', id)
+      btn.innerHTML = '<span class="ldm-btn-icon">✓</span> Added'
+      btn.classList.add('ldm-btn--done')
+      setTimeout(() => { btn.innerHTML = original; btn.classList.remove('ldm-btn--done') }, 3000)
+    }
+
+    function onError(reason) {
+      console.error('[LDM] failed:', reason)
+      btn.innerHTML = '<span class="ldm-btn-icon">✗</span> Failed'
+      setTimeout(() => { btn.innerHTML = original }, 2500)
+    }
+
+    chrome.runtime.sendMessage({ type: 'get_cookies', url }, (res) => {
+      const cookies = res?.cookies || ''
+      console.log('[LDM] download:', url, 'quality:', quality, 'pageUrl:', pageUrl)
+
+      const payload = { url, engine, referer, cookies, quality, pageUrl }
+
+      function viaBackground() {
+        if (!chrome.runtime?.id) { onError('extension context gone'); return }
+        chrome.runtime.sendMessage({ type: 'download', ...payload }, r => {
+          if (chrome.runtime.lastError) onError(chrome.runtime.lastError.message)
+          else if (r?.ok) onSuccess(r.id)
+          else onError(r?.error || 'background error')
+        })
+      }
+
+      if (location.protocol === 'https:') { viaBackground(); return }
+
+      fetch('http://localhost:6543/api/downloads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(r => r.json())
+        .then(data => { if (data.id) onSuccess(data.id); else onError(data.error || 'unknown') })
+        .catch(() => viaBackground())
+    })
+  }
+
+  // ── Link button (download links on page) ──────────────────────────────────────
 
   function getLinkExt(href) {
     try {
@@ -115,11 +382,10 @@
     const btn = document.createElement('button')
     btn.className = 'ldm-link-btn'
     btn.innerHTML = '⬇'
-    btn.title = `Download .${ext} with LDM`
+    btn.title     = `Download .${ext} with LDM`
     btn.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      sendDownload(anchor.href, btn, true)
+      e.preventDefault(); e.stopPropagation()
+      triggerDownload(anchor.href, btn, null, window.location.href)
     })
     anchor.insertAdjacentElement('afterend', btn)
   }
@@ -128,91 +394,33 @@
     document.querySelectorAll('a[href]').forEach(injectLinkButton)
   }
 
-  // ── Layer 1: intercept bar (Content-Type sniff from background) ───────────────
+  // ── Intercept bar ─────────────────────────────────────────────────────────────
 
   function showInterceptBar(url, contentType, size) {
     if (seenUrls.has(url)) return
     seenUrls.add(url)
-
     document.getElementById('ldm-intercept-bar')?.remove()
 
     const sizeStr = size > 0 ? ` · ${formatSize(size)}` : ''
-    const typeStr = contentType.split('/')[1]?.split(';')[0] || url.split('.').pop().split('?')[0].toUpperCase().slice(0, 5)
+    const typeStr = contentType.split('/')[1]?.split(';')[0]?.toUpperCase() ||
+                    url.split('.').pop().split('?')[0].toUpperCase().slice(0, 5)
 
     const bar = document.createElement('div')
     bar.id = 'ldm-intercept-bar'
     bar.innerHTML = `
       <span class="ldm-bar-icon">⬇</span>
-      <span class="ldm-bar-text">LDM detected a <strong>${typeStr.toUpperCase()}</strong> file${sizeStr}</span>
+      <span class="ldm-bar-text">LDM detected a <strong>${typeStr}</strong> file${sizeStr}</span>
       <button class="ldm-bar-dl">Download with LDM</button>
       <button class="ldm-bar-close" title="Dismiss">✕</button>
     `
-    bar.querySelector('.ldm-bar-dl').onclick = () => { sendDownload(url, bar.querySelector('.ldm-bar-dl')); setTimeout(() => bar.remove(), 1500) }
+    const dlBtn = bar.querySelector('.ldm-bar-dl')
+    dlBtn.onclick = () => {
+      triggerDownload(url, dlBtn, null, document.referrer || null)
+      setTimeout(() => bar.remove(), 1500)
+    }
     bar.querySelector('.ldm-bar-close').onclick = () => bar.remove()
     document.body.appendChild(bar)
     setTimeout(() => bar?.remove(), 12_000)
-  }
-
-  // ── Send download — direct fetch with background worker fallback ──────────────
-  // Fix 2: HTTPS pages (wcostream.com) can block HTTP→localhost fetch due to
-  // mixed-content rules. If direct fetch fails, fall back to routing through
-  // the background service worker which is not subject to page-level CSP.
-
-  function sendDownload(url, el, isLink = false, engine = undefined, referer = undefined) {
-    const original = el.innerHTML
-    el.innerHTML = isLink ? '...' : '⏳ Adding...'
-    console.log('[LDM] sending download:', url, engine ? `(engine: ${engine})` : '')
-
-    function onSuccess(id) {
-      console.log('[LDM] added, id:', id)
-      el.innerHTML = isLink ? '✓' : '✓ Added'
-      el.classList.add(isLink ? 'ldm-link-btn--done' : 'ldm-btn--done')
-      setTimeout(() => { el.innerHTML = original; el.classList.remove('ldm-link-btn--done', 'ldm-btn--done') }, 3000)
-    }
-
-    function onError(reason) {
-      console.error('[LDM] failed:', reason)
-      el.innerHTML = isLink ? '!' : '✗ Failed'
-      setTimeout(() => { el.innerHTML = original }, 2500)
-    }
-
-    function viaBackground() {
-      if (!chrome.runtime?.id) { onError('extension context gone'); return }
-      chrome.runtime.sendMessage({ type: 'download', url, engine, referer }, res => {
-        if (chrome.runtime.lastError) {
-          onError('background unavailable: ' + chrome.runtime.lastError.message)
-        } else if (res?.ok) {
-          onSuccess(res.id)
-        } else {
-          onError(res?.error || 'background error')
-        }
-      })
-    }
-
-    if (location.protocol === 'https:') {
-      viaBackground()
-      return
-    }
-
-    fetch('http://localhost:6543/api/downloads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, engine, referer }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.id) onSuccess(data.id)
-        else onError(data.error || 'unknown')
-      })
-      .catch(() => viaBackground())
-  }
-
-  function formatSize(bytes) {
-    if (!bytes) return ''
-    const u = ['B', 'KB', 'MB', 'GB']
-    let i = 0, n = bytes
-    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
-    return `${n.toFixed(1)} ${u[i]}`
   }
 
   // ── Messages from background ──────────────────────────────────────────────────
@@ -227,16 +435,12 @@
       seenUrls.add(msg.url)
       const videos = Array.from(document.querySelectorAll('video'))
       const target = videos.find(v => v.offsetWidth > 100) || videos[0]
-      if (target) {
-        // injectVideoButton handles both: update URL on existing button, or inject new one
-        injectVideoButton(target, msg.url)
-      } else {
-        console.log('[LDM] no <video> in this frame yet')
-      }
+      if (target) injectVideoButton(target, msg.url)
+      else console.log('[LDM] no <video> found in this frame yet')
     }
   })
 
-  // ── DOM observation + initial scans ──────────────────────────────────────────
+  // ── DOM observation ───────────────────────────────────────────────────────────
 
   let scanTimer = null
   const observer = new MutationObserver(() => {

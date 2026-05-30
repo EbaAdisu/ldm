@@ -35,8 +35,67 @@
   background: rgba(34, 197, 94, 0.92) !important;
 }
 
-.ldm-icon {
+.ldm-btn-icon { font-size: 12px; }
+.ldm-btn-arrow { font-size: 9px; opacity: 0.75; margin-left: 1px; }
+
+/* ── Quality dropdown ────────────────────────────────────────────────── */
+#ldm-dropdown {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 240px;
+  max-width: 320px;
+  background: rgba(13, 16, 22, 0.98);
+  border: 1px solid #0ea5e9;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  animation: ldm-drop-in 0.14s ease;
+  pointer-events: all;
+}
+
+@keyframes ldm-drop-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+.ldm-drop-title {
+  padding: 10px 14px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd5e1;
+  border-bottom: 1px solid #1e2535;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+.ldm-drop-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid rgba(30, 37, 53, 0.6);
+  color: #e2e8f0;
+  font-size: 13px;
+}
+.ldm-drop-item:last-child { border-bottom: none; }
+.ldm-drop-item:hover { background: rgba(14, 165, 233, 0.14); }
+.ldm-drop-item:active { background: rgba(14, 165, 233, 0.25); }
+
+.ldm-drop-dot   { color: #0ea5e9; font-size: 10px; flex-shrink: 0; width: 12px; }
+.ldm-drop-label { flex: 1; font-weight: 600; }
+.ldm-drop-size  {
+  color: #64748b;
   font-size: 11px;
+  flex-shrink: 0;
+  min-width: 58px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Link button (appears next to <a href> download links) ── */

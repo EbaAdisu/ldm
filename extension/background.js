@@ -112,8 +112,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (msg.type === 'get_quality_sizes') {
+    const referer = msg.referer || ''
+    Promise.all(
+      (msg.sources || []).map(async (source) => {
+        try {
+          const ctrl = new AbortController()
+          const t    = setTimeout(() => ctrl.abort(), 4000)
+          const res  = await fetch(source.url, {
+            method:  'HEAD',
+            headers: { 'Referer': referer, 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+            signal:  ctrl.signal,
+          })
+          clearTimeout(t)
+          const bytes = parseInt(res.headers.get('content-length') || '0')
+          return { ...source, size: bytes, sizeStr: bytes > 0 ? bgFormatBytes(bytes) : '—' }
+        } catch {
+          return { ...source, size: 0, sizeStr: '—' }
+        }
+      })
+    ).then(results => sendResponse({ sources: results }))
+    return true
+  }
+
   if (msg.type === 'download') {
-    sendToLDM(msg.url, msg.engine, msg.referer, msg.cookies)
+    sendToLDM(msg.url, msg.engine, msg.referer, msg.cookies, msg.quality, msg.pageUrl)
       .then(data => sendResponse({ ok: true, id: data?.id }))
       .catch(err => sendResponse({ ok: false, error: err.message }))
     return true
@@ -136,7 +159,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function sendToLDM(url, engine, referer, cookies) {
+function bgFormatBytes(bytes) {
+  if (!bytes) return '—'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0, n = bytes
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
+  return `${n.toFixed(1)} ${u[i]}`
+}
+
+async function sendToLDM(url, engine, referer, cookies, quality, pageUrl) {
   const res  = await fetch(`${LDM_URL}/api/downloads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -145,6 +176,8 @@ async function sendToLDM(url, engine, referer, cookies) {
       ...(engine  && { engine }),
       ...(referer && { referer }),
       ...(cookies && { cookies }),
+      ...(quality  && { quality }),
+      ...(pageUrl  && { pageUrl }),
     }),
   })
   if (!res.ok) throw new Error(`LDM returned ${res.status}`)
