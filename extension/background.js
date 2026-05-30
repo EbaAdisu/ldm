@@ -104,7 +104,7 @@ chrome.tabs.onRemoved.addListener((tabId) => tabMediaUrls.delete(tabId))
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'download') {
     sendToLDM(msg.url)
-      .then(() => sendResponse({ ok: true }))
+      .then(data => sendResponse({ ok: true, id: data?.id }))
       .catch(err => sendResponse({ ok: false, error: err.message }))
     return true
   }
@@ -127,12 +127,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function sendToLDM(url) {
-  const res = await fetch(`${LDM_URL}/api/downloads`, {
+  const res  = await fetch(`${LDM_URL}/api/downloads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
   })
   if (!res.ok) throw new Error(`LDM returned ${res.status}`)
+  const data = await res.json()
 
   chrome.notifications.create(`ldm-${Date.now()}`, {
     type: 'basic',
@@ -140,6 +141,8 @@ async function sendToLDM(url) {
     title: 'LDM — Download Added',
     message: url.length > 60 ? url.slice(0, 57) + '...' : url,
   })
+
+  return data
 }
 
 function isInterceptableContentType(ct) {

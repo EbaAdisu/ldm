@@ -5,7 +5,12 @@
   const injectedLinks  = new WeakSet()
   const seenUrls       = new Set()
 
-  // Extensions that mark an <a href> as a downloadable file
+  // Fix 1: store the latest intercepted stream URL per video element.
+  // This is updated any time background detects a real media URL, even if the
+  // button was already injected. Click reads from this map at the moment of click
+  // so it always uses the most up-to-date URL instead of the PHP embed page URL.
+  const videoStreamUrls = new WeakMap()
+
   const FILE_EXTS = new Set([
     'mp4','webm','mkv','avi','mov','flv','m4v','wmv','ts',
     'mp3','ogg','wav','aac','flac','opus','m4a',
@@ -18,35 +23,33 @@
   // ── Layer 3: <video> element injection ───────────────────────────────────────
 
   function getVideoSrc(video) {
-    return (
-      video.src ||
-      video.currentSrc ||
+    const src = video.src || video.currentSrc ||
       video.querySelector('source')?.src ||
       video.getAttribute('data-src') ||
-      video.getAttribute('data-url') ||
-      null
-    )
+      video.getAttribute('data-url') || null
+    // blob: URLs are not downloadable directly — ignore them
+    return src && !src.startsWith('blob:') ? src : null
   }
 
-  function injectVideoButton(video, overrideUrl = null) {
-    if (injectedVideos.has(video)) return
+  function injectVideoButton(video, streamUrl = null) {
+    // Always update the stored stream URL if a better one arrives later
+    if (streamUrl) {
+      videoStreamUrls.set(video, streamUrl)
+      console.log('[LDM] stream URL updated for video:', streamUrl)
+    }
+
+    if (injectedVideos.has(video)) return   // button already in DOM, URL updated above
     if (video.offsetWidth < 100) return
     injectedVideos.add(video)
-    console.log('[LDM] injecting button on video, overrideUrl:', overrideUrl, 'src:', video.src || video.currentSrc)
 
     const btn = document.createElement('button')
     btn.className = 'ldm-btn'
     btn.innerHTML = '<span>⬇</span> LDM'
     btn.title = 'Download with LDM'
-
-    // Attach to body — completely outside the video player's DOM tree.
-    // This means YouTube/Vimeo/etc. overflow:hidden, pointer-event overlays,
-    // and z-index stacking contexts cannot block or clip the button.
     document.body.appendChild(btn)
 
     function reposition() {
       const r = video.getBoundingClientRect()
-      // Hide when video is off-screen or invisible
       if (r.width < 10 || r.height < 10 || r.bottom < 0 || r.top > window.innerHeight) {
         btn.style.opacity = '0'
         btn.style.pointerEvents = 'none'
@@ -54,7 +57,6 @@
       }
       btn.style.opacity = '1'
       btn.style.pointerEvents = ''
-      // position: fixed uses viewport coords — getBoundingClientRect gives exactly that
       btn.style.top   = `${r.top + 8}px`
       btn.style.right = `${window.innerWidth - r.right + 8}px`
     }
@@ -68,16 +70,18 @@
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
-      // Prefer the intercepted stream URL (e.g. .m3u8) over the blob/element src
-      const src = overrideUrl || getVideoSrc(video) || window.location.href
-      console.log('[LDM] download clicked, sending URL:', src)
+      // At click time, prefer: intercepted stream URL > element src > page URL
+      const src = videoStreamUrls.get(video) || getVideoSrc(video) || window.location.href
+      console.log('[LDM] download clicked, url:', src)
       sendDownload(src, btn)
     })
+
+    console.log('[LDM] button injected on video in', location.href)
   }
 
   function scanVideos() {
     const videos = document.querySelectorAll('video')
-    console.log('[LDM] scanning for videos, found:', videos.length, 'on', location.href)
+    console.log('[LDM] scan:', videos.length, 'video(s) on', location.href)
     videos.forEach(v => injectVideoButton(v))
   }
 
@@ -101,13 +105,11 @@
     btn.className = 'ldm-link-btn'
     btn.innerHTML = '⬇'
     btn.title = `Download .${ext} with LDM`
-
     btn.addEventListener('click', (e) => {
       e.preventDefault()
       e.stopPropagation()
       sendDownload(anchor.href, btn, true)
     })
-
     anchor.insertAdjacentElement('afterend', btn)
   }
 
@@ -115,51 +117,68 @@
     document.querySelectorAll('a[href]').forEach(injectLinkButton)
   }
 
-  // ── Layer 1: intercept bar (triggered by background's Content-Type sniff) ────
+  // ── Layer 1: intercept bar (Content-Type sniff from background) ───────────────
 
   function showInterceptBar(url, contentType, size) {
-    // One bar at a time per URL
     if (seenUrls.has(url)) return
     seenUrls.add(url)
 
-    const existing = document.getElementById('ldm-intercept-bar')
-    if (existing) existing.remove()
+    document.getElementById('ldm-intercept-bar')?.remove()
 
-    const ext      = url.split('.').pop().split('?')[0].toUpperCase().slice(0, 5)
-    const sizeStr  = size > 0 ? ` · ${formatSize(size)}` : ''
-    const typeStr  = contentType.split('/')[1]?.split(';')[0] || ext
+    const sizeStr = size > 0 ? ` · ${formatSize(size)}` : ''
+    const typeStr = contentType.split('/')[1]?.split(';')[0] || url.split('.').pop().split('?')[0].toUpperCase().slice(0, 5)
 
-    const bar      = document.createElement('div')
-    bar.id         = 'ldm-intercept-bar'
-    bar.innerHTML  = `
+    const bar = document.createElement('div')
+    bar.id = 'ldm-intercept-bar'
+    bar.innerHTML = `
       <span class="ldm-bar-icon">⬇</span>
-      <span class="ldm-bar-text">
-        LDM detected a <strong>${typeStr.toUpperCase()}</strong> file${sizeStr}
-      </span>
+      <span class="ldm-bar-text">LDM detected a <strong>${typeStr.toUpperCase()}</strong> file${sizeStr}</span>
       <button class="ldm-bar-dl">Download with LDM</button>
       <button class="ldm-bar-close" title="Dismiss">✕</button>
     `
-
-    bar.querySelector('.ldm-bar-dl').onclick = () => {
-      sendDownload(url, bar.querySelector('.ldm-bar-dl'))
-      setTimeout(() => bar.remove(), 1500)
-    }
+    bar.querySelector('.ldm-bar-dl').onclick = () => { sendDownload(url, bar.querySelector('.ldm-bar-dl')); setTimeout(() => bar.remove(), 1500) }
     bar.querySelector('.ldm-bar-close').onclick = () => bar.remove()
-
     document.body.appendChild(bar)
     setTimeout(() => bar?.remove(), 12_000)
   }
 
-  // ── Shared: send URL directly to LDM backend ─────────────────────────────────
-  // Bypasses the background service worker entirely — MV3 service workers
-  // go to sleep after ~30s and cause "Nothing to see here" errors on sendMessage.
-  // Content scripts can fetch localhost directly via host_permissions.
+  // ── Send download — direct fetch with background worker fallback ──────────────
+  // Fix 2: HTTPS pages (wcostream.com) can block HTTP→localhost fetch due to
+  // mixed-content rules. If direct fetch fails, fall back to routing through
+  // the background service worker which is not subject to page-level CSP.
 
   function sendDownload(url, el, isLink = false) {
     const original = el.innerHTML
-    el.innerHTML   = isLink ? '...' : '⏳ Adding...'
-    console.log('[LDM] sending download to backend:', url)
+    el.innerHTML = isLink ? '...' : '⏳ Adding...'
+    console.log('[LDM] sending download:', url)
 
+    function onSuccess(id) {
+      console.log('[LDM] added, id:', id)
+      el.innerHTML = isLink ? '✓' : '✓ Added'
+      el.classList.add(isLink ? 'ldm-link-btn--done' : 'ldm-btn--done')
+      setTimeout(() => { el.innerHTML = original; el.classList.remove('ldm-link-btn--done', 'ldm-btn--done') }, 3000)
+    }
+
+    function onError(reason) {
+      console.error('[LDM] failed:', reason)
+      el.innerHTML = isLink ? '!' : '✗ Failed'
+      setTimeout(() => { el.innerHTML = original }, 2500)
+    }
+
+    function viaBackground() {
+      if (!chrome.runtime?.id) { onError('extension context gone'); return }
+      chrome.runtime.sendMessage({ type: 'download', url }, res => {
+        if (chrome.runtime.lastError) {
+          onError('background unavailable: ' + chrome.runtime.lastError.message)
+        } else if (res?.ok) {
+          onSuccess(res.id)
+        } else {
+          onError(res?.error || 'background error')
+        }
+      })
+    }
+
+    // Try direct fetch first (works on HTTP pages and most HTTPS extension contexts)
     fetch('http://localhost:6543/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -167,24 +186,12 @@
     })
       .then(r => r.json())
       .then(data => {
-        if (data.id || data.ok !== false) {
-          console.log('[LDM] download added, id:', data.id)
-          el.innerHTML = isLink ? '✓' : '✓ Added'
-          el.classList.add(isLink ? 'ldm-link-btn--done' : 'ldm-btn--done')
-          setTimeout(() => {
-            el.innerHTML = original
-            el.classList.remove('ldm-link-btn--done', 'ldm-btn--done')
-          }, 3000)
-        } else {
-          console.warn('[LDM] backend error:', data.error)
-          el.innerHTML = isLink ? '!' : '✗ Error'
-          setTimeout(() => { el.innerHTML = original }, 2000)
-        }
+        if (data.id) onSuccess(data.id)
+        else onError(data.error || 'unknown')
       })
       .catch(err => {
-        console.error('[LDM] could not reach LDM — is it running?', err.message)
-        el.innerHTML = isLink ? '!' : '✗ LDM offline'
-        setTimeout(() => { el.innerHTML = original }, 2500)
+        console.warn('[LDM] direct fetch blocked (' + err.message + '), trying background worker...')
+        viaBackground()
       })
   }
 
@@ -196,7 +203,7 @@
     return `${n.toFixed(1)} ${u[i]}`
   }
 
-  // ── Message listener (from background.js) ────────────────────────────────────
+  // ── Messages from background ──────────────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'intercept_detected') {
@@ -204,21 +211,20 @@
       showInterceptBar(msg.url, msg.contentType, msg.size)
     }
     if (msg.type === 'media_detected') {
-      console.log('[LDM] media_detected:', msg.url, 'on frame:', location.href)
-      if (seenUrls.has(msg.url)) return
+      console.log('[LDM] media_detected:', msg.url, 'frame:', location.href)
       seenUrls.add(msg.url)
-      // Pass the real stream URL as override so the button downloads it directly
       const videos = Array.from(document.querySelectorAll('video'))
-      const target = videos.find(v => !injectedVideos.has(v) && v.offsetWidth > 100) || videos[0]
+      const target = videos.find(v => v.offsetWidth > 100) || videos[0]
       if (target) {
+        // injectVideoButton handles both: update URL on existing button, or inject new one
         injectVideoButton(target, msg.url)
       } else {
-        console.log('[LDM] media detected but no <video> element found in this frame')
+        console.log('[LDM] no <video> in this frame yet')
       }
     }
   })
 
-  // ── Observation & initial scans ───────────────────────────────────────────────
+  // ── DOM observation + initial scans ──────────────────────────────────────────
 
   let scanTimer = null
   const observer = new MutationObserver(() => {
