@@ -76,11 +76,15 @@
       // If URL came from an intercepted media stream or video element src it's
       // a direct file — tell the backend to use aria2 instead of running detectEngine
       // (detectEngine can't determine engine from URLs like /getvid?evid=...)
-      const engine   = (streamUrl || elemSrc) ? 'aria2' : undefined
-      // Pass Referer so CDN servers (like wcostream) don't reject the request
-      const referer  = location.href
-      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto', 'referer:', referer)
-      sendDownload(src, btn, false, engine, referer)
+      const engine  = (streamUrl || elemSrc) ? 'aria2' : undefined
+      const referer = location.href
+      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto')
+      // Ask background to collect cookies (content scripts can't call chrome.cookies)
+      chrome.runtime.sendMessage({ type: 'get_cookies', url: src }, res => {
+        const cookies = res?.cookies || ''
+        console.log('[LDM] cookies collected:', cookies ? 'yes' : 'none')
+        sendDownload(src, btn, false, engine, referer, cookies)
+      })
     })
 
     console.log('[LDM] button injected on video in', location.href)

@@ -102,8 +102,18 @@ chrome.tabs.onRemoved.addListener((tabId) => tabMediaUrls.delete(tabId))
 
 // ── Message handler ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'get_cookies') {
+    try {
+      const u = new URL(msg.url)
+      chrome.cookies.getAll({ url: `${u.protocol}//${u.hostname}` })
+        .then(jar => sendResponse({ cookies: jar.map(c => `${c.name}=${c.value}`).join('; ') }))
+        .catch(() => sendResponse({ cookies: '' }))
+    } catch { sendResponse({ cookies: '' }) }
+    return true
+  }
+
   if (msg.type === 'download') {
-    sendToLDM(msg.url, msg.engine, msg.referer)
+    sendToLDM(msg.url, msg.engine, msg.referer, msg.cookies)
       .then(data => sendResponse({ ok: true, id: data?.id }))
       .catch(err => sendResponse({ ok: false, error: err.message }))
     return true
@@ -126,7 +136,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function sendToLDM(url, engine, referer) {
+async function sendToLDM(url, engine, referer, cookies) {
   const res  = await fetch(`${LDM_URL}/api/downloads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -134,6 +144,7 @@ async function sendToLDM(url, engine, referer) {
       url,
       ...(engine  && { engine }),
       ...(referer && { referer }),
+      ...(cookies && { cookies }),
     }),
   })
   if (!res.ok) throw new Error(`LDM returned ${res.status}`)

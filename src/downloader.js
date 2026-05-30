@@ -197,6 +197,7 @@ export async function addDownload(url, options = {}) {
   const id      = uuid()
   const engine  = options.forceEngine ?? await detectEngine(url)
   const referer = options.referer || null
+  const cookies = options.cookies || null
 
   db.prepare(`
     INSERT INTO downloads (id, url, engine, status)
@@ -206,11 +207,11 @@ export async function addDownload(url, options = {}) {
   events.emit('added', { id, url, engine })
 
   if (engine === 'ytdlp') {
-    downloadWithYtdlp(id, url, referer)
+    downloadWithYtdlp(id, url, referer, cookies)
   } else if (aria2Available) {
-    await downloadWithAria2(id, url, referer)
+    await downloadWithAria2(id, url, referer, cookies)
   } else {
-    downloadWithHttp(id, url, referer)
+    downloadWithHttp(id, url, referer, cookies)
   }
 
   return id
@@ -260,22 +261,26 @@ export function cleanup() {
 
 // ── aria2 engine ──────────────────────────────────────────────────────────────
 
-async function downloadWithAria2(id, url, referer = null) {
+async function downloadWithAria2(id, url, referer = null, cookies = null) {
   try {
     const s       = getSettings()
     const tempDir = getTempDir(id)
     mkdirSync(tempDir, { recursive: true })
+
+    const headers = [
+      'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    ]
+    if (referer) headers.push(`Referer: ${referer}`)
+    if (cookies) headers.push(`Cookie: ${cookies}`)
 
     const opts = {
       dir:                         tempDir,
       split:                       s.segments,
       'max-connection-per-server': s.connectionsPerServer,
       'min-split-size':            '1M',
+      header:                      headers,
     }
-    if (referer) {
-      opts.referer = referer
-      opts.header  = [`Referer: ${referer}`]
-    }
+    if (referer) opts.referer = referer
 
     const gid = await aria2Rpc('addUri', [[url], opts])
     db.prepare(`UPDATE downloads SET aria2_gid=?, status='downloading' WHERE id=?`).run(gid, id)
@@ -332,9 +337,12 @@ function pollAria2(id, gid, tempDir, finalDir) {
 
 // ── yt-dlp engine ─────────────────────────────────────────────────────────────
 
-function downloadWithYtdlp(id, url, referer = null) {
-  const refArgs = referer ? ['--referer', referer] : []
-  const infoProc = spawn('yt-dlp', ['--dump-json', '--no-playlist', ...refArgs, url])
+function downloadWithYtdlp(id, url, referer = null, cookies = null) {
+  const extraArgs = [
+    ...(referer ? ['--referer', referer] : []),
+    ...(cookies ? ['--add-header', `Cookie:${cookies}`] : []),
+  ]
+  const infoProc = spawn('yt-dlp', ['--dump-json', '--no-playlist', ...extraArgs, url])
   let infoJson = ''
 
   infoProc.stdout.on('data', d => { infoJson += d.toString() })
@@ -347,24 +355,27 @@ function downloadWithYtdlp(id, url, referer = null) {
         events.emit('progress', { id, title: info.title, thumbnail: info.thumbnail, status: 'downloading' })
       } catch {}
     }
-    _runYtdlp(id, url, referer)
+    _runYtdlp(id, url, referer, cookies)
   })
-  infoProc.on('error', () => _runYtdlp(id, url, referer))
+  infoProc.on('error', () => _runYtdlp(id, url, referer, cookies))
 }
 
-function _runYtdlp(id, url, referer = null) {
-  const finalDir = getDownloadDir()
-  const tempDir  = getTempDir(id)
+function _runYtdlp(id, url, referer = null, cookies = null) {
+  const finalDir  = getDownloadDir()
+  const tempDir   = getTempDir(id)
   mkdirSync(tempDir, { recursive: true })
   db.prepare(`UPDATE downloads SET status='downloading' WHERE id=?`).run(id)
 
-  const refArgs = referer ? ['--referer', referer] : []
+  const extraArgs = [
+    ...(referer ? ['--referer', referer] : []),
+    ...(cookies ? ['--add-header', `Cookie:${cookies}`] : []),
+  ]
   const proc = spawn('yt-dlp', [
     '--newline',
     '-o', join(tempDir, '%(title)s.%(ext)s'),
     '--no-playlist',
     '--merge-output-format', 'mp4',
-    ...refArgs,
+    ...extraArgs,
     url,
   ])
 
@@ -409,14 +420,20 @@ function _runYtdlp(id, url, referer = null) {
 
 // ── Simple HTTP fallback (no aria2) ──────────────────────────────────────────
 
-function downloadWithHttp(id, url) {
+function downloadWithHttp(id, url, referer = null, cookies = null) {
   db.prepare(`UPDATE downloads SET status='downloading' WHERE id=?`).run(id)
 
   const finalDir = getDownloadDir()
   const tempDir  = getTempDir(id)
   mkdirSync(tempDir, { recursive: true })
 
-  fetch(url).then(async (res) => {
+  const reqHeaders = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    ...(referer && { 'Referer': referer }),
+    ...(cookies && { 'Cookie': cookies }),
+  }
+
+  fetch(url, { headers: reqHeaders }).then(async (res) => {
     const filename = getFilenameFromResponse(res, url)
     const tempPath = join(tempDir, filename)
     const total    = parseInt(res.headers.get('content-length') || 0)

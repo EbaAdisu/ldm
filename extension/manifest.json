@@ -12,7 +12,8 @@
     "storage",
     "notifications",
     "webRequest",
-    "tabs"
+    "tabs",
+    "cookies"
   ],
   "host_permissions": [
     "<all_urls>",

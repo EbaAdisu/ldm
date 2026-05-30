@@ -33,10 +33,10 @@ export async function startServer(port) {
   })
 
   app.post('/api/downloads', async (req, res) => {
-    const { url, engine, referer } = req.body
+    const { url, engine, referer, cookies } = req.body
     if (!url?.trim()) return res.status(400).json({ error: 'URL required' })
     try {
-      const id = await addDownload(url.trim(), { forceEngine: engine, referer })
+      const id = await addDownload(url.trim(), { forceEngine: engine, referer, cookies })
       res.json({ id })
     } catch (err) {
       res.status(500).json({ error: err.message })
