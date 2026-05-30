@@ -150,25 +150,42 @@
     setTimeout(() => bar?.remove(), 12_000)
   }
 
-  // ── Shared: send URL to background → backend ─────────────────────────────────
+  // ── Shared: send URL directly to LDM backend ─────────────────────────────────
+  // Bypasses the background service worker entirely — MV3 service workers
+  // go to sleep after ~30s and cause "Nothing to see here" errors on sendMessage.
+  // Content scripts can fetch localhost directly via host_permissions.
 
   function sendDownload(url, el, isLink = false) {
     const original = el.innerHTML
     el.innerHTML   = isLink ? '...' : '⏳ Adding...'
+    console.log('[LDM] sending download to backend:', url)
 
-    chrome.runtime.sendMessage({ type: 'download', url }, (res) => {
-      if (res?.ok) {
-        el.innerHTML = isLink ? '✓' : '✓ Added'
-        el.classList.add(isLink ? 'ldm-link-btn--done' : 'ldm-btn--done')
-        setTimeout(() => {
-          el.innerHTML = original
-          el.classList.remove('ldm-link-btn--done', 'ldm-btn--done')
-        }, 3000)
-      } else {
-        el.innerHTML = isLink ? '!' : '✗ Error'
-        setTimeout(() => { el.innerHTML = original }, 2000)
-      }
+    fetch('http://localhost:6543/api/downloads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
     })
+      .then(r => r.json())
+      .then(data => {
+        if (data.id || data.ok !== false) {
+          console.log('[LDM] download added, id:', data.id)
+          el.innerHTML = isLink ? '✓' : '✓ Added'
+          el.classList.add(isLink ? 'ldm-link-btn--done' : 'ldm-btn--done')
+          setTimeout(() => {
+            el.innerHTML = original
+            el.classList.remove('ldm-link-btn--done', 'ldm-btn--done')
+          }, 3000)
+        } else {
+          console.warn('[LDM] backend error:', data.error)
+          el.innerHTML = isLink ? '!' : '✗ Error'
+          setTimeout(() => { el.innerHTML = original }, 2000)
+        }
+      })
+      .catch(err => {
+        console.error('[LDM] could not reach LDM — is it running?', err.message)
+        el.innerHTML = isLink ? '!' : '✗ LDM offline'
+        setTimeout(() => { el.innerHTML = original }, 2500)
+      })
   }
 
   function formatSize(bytes) {
