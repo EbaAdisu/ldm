@@ -83,8 +83,20 @@ export default function DownloadItem({ download: dl, onAction }) {
       )}
 
       {dl.error && (
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--error)' }}>
-          {dl.error}
+        <div style={{
+          marginTop: 8,
+          padding: '7px 10px',
+          background: 'rgba(239,68,68,0.08)',
+          border: '1px solid rgba(239,68,68,0.3)',
+          borderRadius: 6,
+          fontSize: 12,
+          color: 'var(--error)',
+          display: 'flex',
+          gap: 6,
+          alignItems: 'flex-start',
+        }}>
+          <span style={{ flexShrink: 0 }}>✕</span>
+          <span style={{ wordBreak: 'break-word' }}>{dl.error}</span>
         </div>
       )}
     </div>

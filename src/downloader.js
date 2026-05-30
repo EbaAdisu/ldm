@@ -194,8 +194,9 @@ function setStatus(id, status, extra = {}) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function addDownload(url, options = {}) {
-  const id = uuid()
-  const engine = options.forceEngine ?? await detectEngine(url)
+  const id      = uuid()
+  const engine  = options.forceEngine ?? await detectEngine(url)
+  const referer = options.referer || null
 
   db.prepare(`
     INSERT INTO downloads (id, url, engine, status)
@@ -205,11 +206,11 @@ export async function addDownload(url, options = {}) {
   events.emit('added', { id, url, engine })
 
   if (engine === 'ytdlp') {
-    downloadWithYtdlp(id, url)
+    downloadWithYtdlp(id, url, referer)
   } else if (aria2Available) {
-    await downloadWithAria2(id, url)
+    await downloadWithAria2(id, url, referer)
   } else {
-    downloadWithHttp(id, url)
+    downloadWithHttp(id, url, referer)
   }
 
   return id
@@ -259,18 +260,24 @@ export function cleanup() {
 
 // ── aria2 engine ──────────────────────────────────────────────────────────────
 
-async function downloadWithAria2(id, url) {
+async function downloadWithAria2(id, url, referer = null) {
   try {
     const s       = getSettings()
     const tempDir = getTempDir(id)
     mkdirSync(tempDir, { recursive: true })
 
-    const gid = await aria2Rpc('addUri', [[url], {
+    const opts = {
       dir:                         tempDir,
       split:                       s.segments,
       'max-connection-per-server': s.connectionsPerServer,
       'min-split-size':            '1M',
-    }])
+    }
+    if (referer) {
+      opts.referer = referer
+      opts.header  = [`Referer: ${referer}`]
+    }
+
+    const gid = await aria2Rpc('addUri', [[url], opts])
     db.prepare(`UPDATE downloads SET aria2_gid=?, status='downloading' WHERE id=?`).run(gid, id)
     pollAria2(id, gid, tempDir, s.downloadDir)
   } catch (err) {
@@ -325,9 +332,9 @@ function pollAria2(id, gid, tempDir, finalDir) {
 
 // ── yt-dlp engine ─────────────────────────────────────────────────────────────
 
-function downloadWithYtdlp(id, url) {
-  // First, get metadata (non-blocking)
-  const infoProc = spawn('yt-dlp', ['--dump-json', '--no-playlist', url])
+function downloadWithYtdlp(id, url, referer = null) {
+  const refArgs = referer ? ['--referer', referer] : []
+  const infoProc = spawn('yt-dlp', ['--dump-json', '--no-playlist', ...refArgs, url])
   let infoJson = ''
 
   infoProc.stdout.on('data', d => { infoJson += d.toString() })
@@ -340,22 +347,24 @@ function downloadWithYtdlp(id, url) {
         events.emit('progress', { id, title: info.title, thumbnail: info.thumbnail, status: 'downloading' })
       } catch {}
     }
-    _runYtdlp(id, url)
+    _runYtdlp(id, url, referer)
   })
-  infoProc.on('error', () => _runYtdlp(id, url))
+  infoProc.on('error', () => _runYtdlp(id, url, referer))
 }
 
-function _runYtdlp(id, url) {
+function _runYtdlp(id, url, referer = null) {
   const finalDir = getDownloadDir()
   const tempDir  = getTempDir(id)
   mkdirSync(tempDir, { recursive: true })
   db.prepare(`UPDATE downloads SET status='downloading' WHERE id=?`).run(id)
 
+  const refArgs = referer ? ['--referer', referer] : []
   const proc = spawn('yt-dlp', [
     '--newline',
     '-o', join(tempDir, '%(title)s.%(ext)s'),
     '--no-playlist',
     '--merge-output-format', 'mp4',
+    ...refArgs,
     url,
   ])
 

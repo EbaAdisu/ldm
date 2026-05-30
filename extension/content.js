@@ -76,9 +76,11 @@
       // If URL came from an intercepted media stream or video element src it's
       // a direct file — tell the backend to use aria2 instead of running detectEngine
       // (detectEngine can't determine engine from URLs like /getvid?evid=...)
-      const engine = (streamUrl || elemSrc) ? 'aria2' : undefined
-      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto')
-      sendDownload(src, btn, false, engine)
+      const engine   = (streamUrl || elemSrc) ? 'aria2' : undefined
+      // Pass Referer so CDN servers (like wcostream) don't reject the request
+      const referer  = location.href
+      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto', 'referer:', referer)
+      sendDownload(src, btn, false, engine, referer)
     })
 
     console.log('[LDM] button injected on video in', location.href)
@@ -152,7 +154,7 @@
   // mixed-content rules. If direct fetch fails, fall back to routing through
   // the background service worker which is not subject to page-level CSP.
 
-  function sendDownload(url, el, isLink = false, engine = undefined) {
+  function sendDownload(url, el, isLink = false, engine = undefined, referer = undefined) {
     const original = el.innerHTML
     el.innerHTML = isLink ? '...' : '⏳ Adding...'
     console.log('[LDM] sending download:', url, engine ? `(engine: ${engine})` : '')
@@ -172,7 +174,7 @@
 
     function viaBackground() {
       if (!chrome.runtime?.id) { onError('extension context gone'); return }
-      chrome.runtime.sendMessage({ type: 'download', url, engine }, res => {
+      chrome.runtime.sendMessage({ type: 'download', url, engine, referer }, res => {
         if (chrome.runtime.lastError) {
           onError('background unavailable: ' + chrome.runtime.lastError.message)
         } else if (res?.ok) {
@@ -191,7 +193,7 @@
     fetch('http://localhost:6543/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, engine }),
+      body: JSON.stringify({ url, engine, referer }),
     })
       .then(r => r.json())
       .then(data => {
