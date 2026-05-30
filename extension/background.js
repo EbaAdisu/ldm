@@ -103,7 +103,7 @@ chrome.tabs.onRemoved.addListener((tabId) => tabMediaUrls.delete(tabId))
 // ── Message handler ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'download') {
-    sendToLDM(msg.url)
+    sendToLDM(msg.url, msg.engine)
       .then(data => sendResponse({ ok: true, id: data?.id }))
       .catch(err => sendResponse({ ok: false, error: err.message }))
     return true
@@ -126,11 +126,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function sendToLDM(url) {
+async function sendToLDM(url, engine) {
   const res  = await fetch(`${LDM_URL}/api/downloads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, ...(engine && { engine }) }),
   })
   if (!res.ok) throw new Error(`LDM returned ${res.status}`)
   const data = await res.json()

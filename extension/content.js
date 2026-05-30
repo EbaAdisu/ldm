@@ -70,10 +70,15 @@
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
-      // At click time, prefer: intercepted stream URL > element src > page URL
-      const src = videoStreamUrls.get(video) || getVideoSrc(video) || window.location.href
-      console.log('[LDM] download clicked, url:', src)
-      sendDownload(src, btn)
+      const streamUrl = videoStreamUrls.get(video)
+      const elemSrc   = getVideoSrc(video)
+      const src       = streamUrl || elemSrc || window.location.href
+      // If URL came from an intercepted media stream or video element src it's
+      // a direct file — tell the backend to use aria2 instead of running detectEngine
+      // (detectEngine can't determine engine from URLs like /getvid?evid=...)
+      const engine = (streamUrl || elemSrc) ? 'aria2' : undefined
+      console.log('[LDM] download clicked, url:', src, 'engine:', engine || 'auto')
+      sendDownload(src, btn, false, engine)
     })
 
     console.log('[LDM] button injected on video in', location.href)
@@ -147,10 +152,10 @@
   // mixed-content rules. If direct fetch fails, fall back to routing through
   // the background service worker which is not subject to page-level CSP.
 
-  function sendDownload(url, el, isLink = false) {
+  function sendDownload(url, el, isLink = false, engine = undefined) {
     const original = el.innerHTML
     el.innerHTML = isLink ? '...' : '⏳ Adding...'
-    console.log('[LDM] sending download:', url)
+    console.log('[LDM] sending download:', url, engine ? `(engine: ${engine})` : '')
 
     function onSuccess(id) {
       console.log('[LDM] added, id:', id)
@@ -167,7 +172,7 @@
 
     function viaBackground() {
       if (!chrome.runtime?.id) { onError('extension context gone'); return }
-      chrome.runtime.sendMessage({ type: 'download', url }, res => {
+      chrome.runtime.sendMessage({ type: 'download', url, engine }, res => {
         if (chrome.runtime.lastError) {
           onError('background unavailable: ' + chrome.runtime.lastError.message)
         } else if (res?.ok) {
@@ -178,9 +183,6 @@
       })
     }
 
-    // HTTPS pages (most sites) block HTTP→localhost fetch (mixed content).
-    // Skip straight to background worker — it runs outside page CSP so it can
-    // always reach localhost. Only use direct fetch on HTTP pages.
     if (location.protocol === 'https:') {
       viaBackground()
       return
@@ -189,7 +191,7 @@
     fetch('http://localhost:6543/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, engine }),
     })
       .then(r => r.json())
       .then(data => {
