@@ -28,16 +28,25 @@ pip3 install yt-dlp
 
 ## Quick Start
 
-```bash
-# Install globally
-npm install -g ldm-dl
+### Option A — Install from the project folder (local / development)
 
-# Run
+```bash
+git clone https://github.com/EbaAdisu/ldm.git
+cd ldm
+sudo npm install -g .
 ldm
-# → Checks for aria2 and yt-dlp, starts server, opens http://localhost:6543
 ```
 
-That's it. The app starts, checks for dependencies, and opens the manager UI.
+> The `.` installs the local folder as a global package. `sudo` is required because npm's global directory is owned by root on standard Ubuntu installs.
+
+### Option B — Install from npm (once published)
+
+```bash
+npm install -g ldm-dl
+ldm
+```
+
+Once running, LDM checks for dependencies and opens `http://localhost:6543` automatically.
 
 ---
 
