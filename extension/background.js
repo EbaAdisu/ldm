@@ -48,12 +48,22 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (tabMediaUrls.get(details.tabId).has(details.url)) return
     tabMediaUrls.get(details.tabId).add(details.url)
 
+    console.log('[LDM] interceptable Content-Type detected:', contentType, details.url, 'frame:', details.frameId)
+
+    // Send to the frame that got the response, fallback to main frame
     chrome.tabs.sendMessage(details.tabId, {
       type: 'intercept_detected',
       url: details.url,
       contentType,
       size: contentLength,
-    }).catch(() => {})
+    }, { frameId: details.frameId }).catch(() => {
+      chrome.tabs.sendMessage(details.tabId, {
+        type: 'intercept_detected',
+        url: details.url,
+        contentType,
+        size: contentLength,
+      }).catch(() => {})
+    })
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders']
@@ -73,10 +83,16 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (tabMediaUrls.get(tab).has(details.url)) return
     tabMediaUrls.get(tab).add(details.url)
 
+    console.log('[LDM] media URL detected via request:', details.url, 'frame:', details.frameId)
+
+    // Send to the exact frame that made the request (works for iframe video players)
     chrome.tabs.sendMessage(tab, {
       type: 'media_detected',
       url: details.url,
-    }).catch(() => {})
+    }, { frameId: details.frameId }).catch(() => {
+      // If the specific frame has no content script, try main frame as fallback
+      chrome.tabs.sendMessage(tab, { type: 'media_detected', url: details.url }).catch(() => {})
+    })
   },
   { urls: ['<all_urls>'] }
 )
@@ -138,7 +154,11 @@ function isInterceptableContentType(ct) {
     ct === 'application/x-rar-compressed' ||
     ct === 'application/pdf' ||
     ct === 'application/x-iso9660-image' ||
-    ct === 'application/x-bittorrent'
+    ct === 'application/x-bittorrent' ||
+    // HLS and DASH streaming manifests
+    ct === 'application/x-mpegurl' ||
+    ct === 'application/vnd.apple.mpegurl' ||
+    ct === 'application/dash+xml'
   )
 }
 

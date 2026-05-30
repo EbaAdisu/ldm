@@ -28,10 +28,11 @@
     )
   }
 
-  function injectVideoButton(video) {
+  function injectVideoButton(video, overrideUrl = null) {
     if (injectedVideos.has(video)) return
     if (video.offsetWidth < 100) return
     injectedVideos.add(video)
+    console.log('[LDM] injecting button on video, overrideUrl:', overrideUrl, 'src:', video.src || video.currentSrc)
 
     const btn = document.createElement('button')
     btn.className = 'ldm-btn'
@@ -67,13 +68,17 @@
       e.preventDefault()
       e.stopPropagation()
       e.stopImmediatePropagation()
-      const src = getVideoSrc(video) || window.location.href
+      // Prefer the intercepted stream URL (e.g. .m3u8) over the blob/element src
+      const src = overrideUrl || getVideoSrc(video) || window.location.href
+      console.log('[LDM] download clicked, sending URL:', src)
       sendDownload(src, btn)
     })
   }
 
   function scanVideos() {
-    document.querySelectorAll('video').forEach(injectVideoButton)
+    const videos = document.querySelectorAll('video')
+    console.log('[LDM] scanning for videos, found:', videos.length, 'on', location.href)
+    videos.forEach(v => injectVideoButton(v))
   }
 
   // ── Layer 2: <a href> download link injection ─────────────────────────────────
@@ -178,15 +183,21 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'intercept_detected') {
+      console.log('[LDM] intercept_detected:', msg.contentType, msg.url)
       showInterceptBar(msg.url, msg.contentType, msg.size)
     }
     if (msg.type === 'media_detected') {
-      // A media URL was seen in network traffic — find the video player for it
+      console.log('[LDM] media_detected:', msg.url, 'on frame:', location.href)
       if (seenUrls.has(msg.url)) return
       seenUrls.add(msg.url)
+      // Pass the real stream URL as override so the button downloads it directly
       const videos = Array.from(document.querySelectorAll('video'))
-      const target = videos.find(v => !injectedVideos.has(v) && v.offsetWidth > 100)
-      if (target) injectVideoButton(target)
+      const target = videos.find(v => !injectedVideos.has(v) && v.offsetWidth > 100) || videos[0]
+      if (target) {
+        injectVideoButton(target, msg.url)
+      } else {
+        console.log('[LDM] media detected but no <video> element found in this frame')
+      }
     }
   })
 

@@ -174,6 +174,8 @@ async function detectEngine(url) {
   // Fall back to URL extension
   try {
     const ext = new URL(url).pathname.split('.').pop().split('?')[0].toLowerCase()
+    // HLS/DASH manifests must go to yt-dlp — aria2 would just download the text manifest
+    if (ext === 'm3u8' || ext === 'mpd') return 'ytdlp'
     if (DIRECT_FILE_EXTS.has(ext)) return 'aria2'
   } catch {}
 
