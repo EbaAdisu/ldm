@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px;
+      min-height: 100px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: #0f1117;
+      color: #e2e8f0;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid #2d3047;
+      background: #1a1d27;
+    }
+    .header-title { font-weight: 700; font-size: 14px; color: #0ea5e9; }
+    .open-link {
+      font-size: 11px;
+      color: #64748b;
+      text-decoration: none;
+    }
+    .open-link:hover { color: #0ea5e9; }
+    .add-form {
+      padding: 12px 14px;
+      border-bottom: 1px solid #2d3047;
+      display: flex;
+      gap: 8px;
+    }
+    .add-input {
+      flex: 1;
+      background: #222536;
+      border: 1px solid #2d3047;
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: #e2e8f0;
+      font-size: 12px;
+      outline: none;
+    }
+    .add-input:focus { border-color: #0ea5e9; }
+    .add-input::placeholder { color: #64748b; }
+    .add-btn {
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .add-btn:hover { background: #38bdf8; }
+    .list { max-height: 320px; overflow-y: auto; }
+    .item {
+      padding: 10px 14px;
+      border-bottom: 1px solid #1a1d27;
+    }
+    .item-title {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .item-meta { display: flex; gap: 8px; align-items: center; }
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    .badge-downloading { background: rgba(14,165,233,0.15); color: #0ea5e9; }
+    .badge-completed   { background: rgba(34,197,94,0.15);  color: #22c55e; }
+    .badge-error       { background: rgba(239,68,68,0.15);  color: #ef4444; }
+    .badge-paused      { background: rgba(245,158,11,0.15); color: #f59e0b; }
+    .badge-pending     { background: rgba(100,116,139,0.15); color: #64748b; }
+    .progress {
+      height: 2px;
+      background: #2d3047;
+      border-radius: 1px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .progress-fill { height: 100%; background: #0ea5e9; border-radius: 1px; }
+    .empty {
+      padding: 24px 14px;
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-ok { background: #22c55e; }
+    .dot-err { background: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-title">⬇ LDM</span>
+    <a class="open-link" href="http://localhost:6543" target="_blank">Open Manager →</a>
+  </div>
+
+  <div class="add-form">
+    <input id="url-input" class="add-input" type="url" placeholder="Paste URL to download..." />
+    <button id="add-btn" class="add-btn">Go</button>
+  </div>
+
+  <div class="list" id="list">
+    <div class="empty">Loading...</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

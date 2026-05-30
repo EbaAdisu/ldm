@@ -1,0 +1,39 @@
+{
+  "name": "ldm-dl",
+  "version": "1.0.0",
+  "description": "Linux Download Manager — browser-integrated, IDM-style download manager for Ubuntu",
+  "type": "module",
+  "bin": {
+    "ldm": "./bin/ldm.js"
+  },
+  "scripts": {
+    "start": "node bin/ldm.js",
+    "build:ui": "cd frontend && npm install && npm run build",
+    "postinstall": "npm run build:ui",
+    "dev:server": "node --watch bin/ldm.js --no-browser",
+    "dev:ui": "cd frontend && npm run dev"
+  },
+  "keywords": ["download-manager", "idm", "ubuntu", "linux", "yt-dlp", "aria2"],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "chalk": "^5.3.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "mime-types": "^2.1.35",
+    "open": "^10.1.0",
+    "ora": "^8.0.1",
+    "uuid": "^9.0.1",
+    "which": "^4.0.0",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "extension/"
+  ]
+}
