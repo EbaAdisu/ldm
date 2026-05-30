@@ -178,7 +178,14 @@
       })
     }
 
-    // Try direct fetch first (works on HTTP pages and most HTTPS extension contexts)
+    // HTTPS pages (most sites) block HTTP→localhost fetch (mixed content).
+    // Skip straight to background worker — it runs outside page CSP so it can
+    // always reach localhost. Only use direct fetch on HTTP pages.
+    if (location.protocol === 'https:') {
+      viaBackground()
+      return
+    }
+
     fetch('http://localhost:6543/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -189,10 +196,7 @@
         if (data.id) onSuccess(data.id)
         else onError(data.error || 'unknown')
       })
-      .catch(err => {
-        console.warn('[LDM] direct fetch blocked (' + err.message + '), trying background worker...')
-        viaBackground()
-      })
+      .catch(() => viaBackground())
   }
 
   function formatSize(bytes) {
